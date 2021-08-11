@@ -1003,7 +1003,6 @@
         "energy": {
           "caption": "Energy",
           "description": "Monitor your energy production and consumption",
-          "currency": "",
           "grid": {
             "title": "Electricity grid",
             "sub": "Configure the amount of energy that you consume from the grid and, if you produce energy, give back to the grid. This allows Home Assistant to track your whole home energy usage.",
@@ -1052,7 +1051,10 @@
             "sub": "Tracking the energy usage of individual devices allows Home Assistant to break down your energy usage by device.",
             "learn_more": "More information on how to get started.",
             "add_stat": "Pick entity to track energy of",
-            "selected_stat": "Tracking energy for"
+            "selected_stat": "Tracking energy for",
+            "dialog": {
+              "selected_stat_intro": "Select the entity that represents the device energy usage."
+            }
           }
         },
         "helpers": {
@@ -1900,6 +1902,7 @@
               "title": "Remote Control",
               "connected": "Connected",
               "not_connected": "Not Connected",
+              "reconnecting": "Reconnecting",
               "access_is_being_prepared": "Remote control is being prepared. We will notify you when it's ready.",
               "info": "Home Assistant Cloud provides a secure remote connection to your instance while away from home.",
               "instance_is_available": "Your instance is available at",
@@ -2943,7 +2946,7 @@
             },
             "type": "View type",
             "types": {
-              "masonary": "Masonary (default)",
+              "masonry": "Masonry (default)",
               "sidebar": "Sidebar",
               "panel": "Panel (1 card)"
             }

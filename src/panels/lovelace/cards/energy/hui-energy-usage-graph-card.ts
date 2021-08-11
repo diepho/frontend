@@ -1,5 +1,11 @@
 import { ChartData, ChartDataset, ChartOptions } from "chart.js";
-import { startOfToday, endOfToday } from "date-fns";
+import {
+  startOfToday,
+  endOfToday,
+  isToday,
+  differenceInDays,
+  addHours,
+} from "date-fns";
 import { UnsubscribeFunc } from "home-assistant-js-websocket";
 import { css, CSSResultGroup, html, LitElement, TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators";
@@ -21,6 +27,10 @@ import {
 import "../../../../components/chart/ha-chart-base";
 import "../../../../components/ha-card";
 import { EnergyData, getEnergyDataCollection } from "../../../../data/energy";
+import {
+  reduceSumStatisticsByDay,
+  reduceSumStatisticsByMonth,
+} from "../../../../data/history";
 import { FrontendLocaleData } from "../../../../data/translation";
 import { SubscribeMixin } from "../../../../mixins/subscribe-mixin";
 import { HomeAssistant } from "../../../../types";
@@ -84,112 +94,149 @@ export class HuiEnergyUsageGraphCard
             )}
             chart-type="bar"
           ></ha-chart-base>
+          ${!this._chartData.datasets.length
+            ? html`<div class="no-data">
+                ${isToday(this._start)
+                  ? "There is no data to show. It can take up to 2 hours for new data to arrive after you configure your energy dashboard."
+                  : "There is no data for this period."}
+              </div>`
+            : ""}
         </div>
       </ha-card>
     `;
   }
 
   private _createOptions = memoizeOne(
-    (start: Date, end: Date, locale: FrontendLocaleData): ChartOptions => ({
-      parsing: false,
-      animation: false,
-      scales: {
-        x: {
-          type: "time",
-          suggestedMin: start.getTime(),
-          suggestedMax: end.getTime(),
-          adapters: {
-            date: {
-              locale: locale,
+    (start: Date, end: Date, locale: FrontendLocaleData): ChartOptions => {
+      const dayDifference = differenceInDays(end, start);
+      return {
+        parsing: false,
+        animation: false,
+        scales: {
+          x: {
+            type: "time",
+            suggestedMin: (dayDifference > 2
+              ? addHours(start, -11)
+              : start
+            ).getTime(),
+            suggestedMax: (dayDifference > 2
+              ? addHours(end, -11)
+              : end
+            ).getTime(),
+            adapters: {
+              date: {
+                locale: locale,
+              },
+            },
+            ticks: {
+              maxRotation: 0,
+              sampleSize: 5,
+              autoSkipPadding: 20,
+              major: {
+                enabled: true,
+              },
+              font: (context) =>
+                context.tick && context.tick.major
+                  ? ({ weight: "bold" } as any)
+                  : {},
+            },
+            time: {
+              tooltipFormat:
+                dayDifference > 35
+                  ? "monthyear"
+                  : dayDifference > 7
+                  ? "date"
+                  : dayDifference > 2
+                  ? "weekday"
+                  : dayDifference > 0
+                  ? "datetime"
+                  : "hour",
+              minUnit:
+                dayDifference > 35
+                  ? "month"
+                  : dayDifference > 2
+                  ? "day"
+                  : "hour",
+            },
+            offset: true,
+          },
+          y: {
+            stacked: true,
+            type: "linear",
+            title: {
+              display: true,
+              text: "kWh",
+            },
+            ticks: {
+              beginAtZero: true,
+              callback: (value) => formatNumber(Math.abs(value), locale),
             },
           },
-          ticks: {
-            maxRotation: 0,
-            sampleSize: 5,
-            autoSkipPadding: 20,
-            major: {
-              enabled: true,
-            },
-            font: (context) =>
-              context.tick && context.tick.major
-                ? ({ weight: "bold" } as any)
-                : {},
-          },
-          time: {
-            tooltipFormat: "datetime",
-          },
-          offset: true,
         },
-        y: {
-          stacked: true,
-          type: "linear",
-          title: {
-            display: true,
-            text: "kWh",
-          },
-          ticks: {
-            beginAtZero: true,
-            callback: (value) => formatNumber(Math.abs(value), locale),
-          },
-        },
-      },
-      plugins: {
-        tooltip: {
-          mode: "x",
-          intersect: true,
-          position: "nearest",
-          filter: (val) => val.formattedValue !== "0",
-          callbacks: {
-            label: (context) =>
-              `${context.dataset.label}: ${formatNumber(
-                Math.abs(context.parsed.y),
-                locale
-              )} kWh`,
-            footer: (contexts) => {
-              let totalConsumed = 0;
-              let totalReturned = 0;
-              for (const context of contexts) {
-                const value = (context.dataset.data[context.dataIndex] as any)
-                  .y;
-                if (value > 0) {
-                  totalConsumed += value;
-                } else {
-                  totalReturned += Math.abs(value);
+        plugins: {
+          tooltip: {
+            mode: "x",
+            intersect: true,
+            position: "nearest",
+            filter: (val) => val.formattedValue !== "0",
+            callbacks: {
+              label: (context) =>
+                `${context.dataset.label}: ${formatNumber(
+                  Math.abs(context.parsed.y),
+                  locale
+                )} kWh`,
+              footer: (contexts) => {
+                let totalConsumed = 0;
+                let totalReturned = 0;
+                for (const context of contexts) {
+                  const value = (context.dataset.data[context.dataIndex] as any)
+                    .y;
+                  if (value > 0) {
+                    totalConsumed += value;
+                  } else {
+                    totalReturned += Math.abs(value);
+                  }
                 }
-              }
-              return [
-                totalConsumed
-                  ? `Total consumed: ${formatNumber(totalConsumed, locale)} kWh`
-                  : "",
-                totalReturned
-                  ? `Total returned: ${formatNumber(totalReturned, locale)} kWh`
-                  : "",
-              ].filter(Boolean);
+                return [
+                  totalConsumed
+                    ? `Total consumed: ${formatNumber(
+                        totalConsumed,
+                        locale
+                      )} kWh`
+                    : "",
+                  totalReturned
+                    ? `Total returned: ${formatNumber(
+                        totalReturned,
+                        locale
+                      )} kWh`
+                    : "",
+                ].filter(Boolean);
+              },
+            },
+          },
+          filler: {
+            propagate: false,
+          },
+          legend: {
+            display: false,
+            labels: {
+              usePointStyle: true,
             },
           },
         },
-        filler: {
-          propagate: false,
+        hover: {
+          mode: "nearest",
         },
-        legend: {
-          display: false,
-          labels: {
-            usePointStyle: true,
+        elements: {
+          bar: { borderWidth: 1.5, borderRadius: 4 },
+          point: {
+            hitRadius: 5,
           },
         },
-      },
-      hover: {
-        mode: "nearest",
-      },
-      elements: {
-        bar: { borderWidth: 1.5, borderRadius: 4 },
-        point: {
-          hitRadius: 5,
-        },
-      },
-      // @ts-expect-error
-      locale: numberFormatToLocale(locale),
-    })
+        // @ts-expect-error
+        locale: numberFormatToLocale(locale),
+      };
+    }
   );
 
   private async _getStatistics(energyData: EnergyData): Promise<void> {
@@ -226,7 +273,13 @@ export class HuiEnergyUsageGraphCard
       }
     }
 
+    const dayDifference = differenceInDays(
+      energyData.end || new Date(),
+      energyData.start
+    );
+
     const statisticsData = Object.values(energyData.stats);
+
     const datasets: ChartDataset<"bar">[] = [];
     let endTime: Date;
 
@@ -243,7 +296,7 @@ export class HuiEnergyUsageGraphCard
     endTime = new Date(
       Math.max(
         ...statisticsData.map((stats) =>
-          new Date(stats[stats.length - 1].start).getTime()
+          stats.length ? new Date(stats[stats.length - 1].start).getTime() : 0
         )
       )
     );
@@ -280,14 +333,20 @@ export class HuiEnergyUsageGraphCard
       const totalStats: { [start: string]: number } = {};
       const sets: { [statId: string]: { [start: string]: number } } = {};
       statIds!.forEach((id) => {
-        const stats = energyData.stats[id];
+        const stats =
+          dayDifference > 35
+            ? reduceSumStatisticsByMonth(energyData.stats[id])
+            : dayDifference > 2
+            ? reduceSumStatisticsByDay(energyData.stats[id])
+            : energyData.stats[id];
         if (!stats) {
           return;
         }
+
         const set = {};
         let prevValue: number;
         stats.forEach((stat) => {
-          if (!stat.sum) {
+          if (stat.sum === null) {
             return;
           }
           if (!prevValue) {
@@ -348,10 +407,11 @@ export class HuiEnergyUsageGraphCard
         data.push({
           label:
             type === "used_solar"
-              ? "Solar"
+              ? "Consumed solar"
               : entity
               ? computeStateName(entity)
               : statId,
+          order: type === "used_solar" ? 0 : idx + 1,
           borderColor,
           backgroundColor: hexBlend(borderColor, backgroundColor, 50),
           stack: "stack",
@@ -392,6 +452,19 @@ export class HuiEnergyUsageGraphCard
       }
       .has-header {
         padding-top: 0;
+      }
+      .no-data {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        top: 0;
+        left: 0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 20%;
+        margin-left: 32px;
+        box-sizing: border-box;
       }
     `;
   }

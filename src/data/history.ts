@@ -1,3 +1,4 @@
+import { addDays, addMonths, startOfDay, startOfMonth } from "date-fns";
 import { HassEntity } from "home-assistant-js-websocket";
 import { computeStateDisplay } from "../common/entity/compute_state_display";
 import { computeStateDomain } from "../common/entity/compute_state_domain";
@@ -346,64 +347,32 @@ export const statisticsHaveType = (
   type: StatisticType
 ) => stats.some((stat) => stat[type] !== null);
 
-/**
- * Get the earliest start from a list of statistics.
- */
-const getMinStatisticStart = (stats: StatisticValue[][]): string | null => {
-  let earliestString: string | null = null;
-  let earliestTime: Date | null = null;
+// Merge the growth of multiple sum statistics into one
+const mergeSumGrowthStatistics = (stats: StatisticValue[][]) => {
+  const result = {};
 
-  for (const stat of stats) {
+  stats.forEach((stat) => {
     if (stat.length === 0) {
-      continue;
+      return;
     }
-    const curTime = new Date(stat[0].start);
-
-    if (earliestString === null) {
-      earliestString = stat[0].start;
-      earliestTime = curTime;
-      continue;
-    }
-
-    if (curTime < earliestTime!) {
-      earliestString = stat[0].start;
-      earliestTime = curTime;
-    }
-  }
-
-  return earliestString;
-};
-
-// Merge multiple sum statistics into one
-const mergeSumStatistics = (stats: StatisticValue[][]) => {
-  const result: { start: string; sum: number }[] = [];
-
-  const statsCopy: StatisticValue[][] = stats.map((stat) => [...stat]);
-
-  while (statsCopy.some((stat) => stat.length > 0)) {
-    const earliestStart = getMinStatisticStart(statsCopy)!;
-
-    let sum = 0;
-
-    for (const stat of statsCopy) {
-      if (stat.length === 0) {
-        continue;
+    let prevSum: number | null = null;
+    stat.forEach((statVal) => {
+      if (statVal.sum === null) {
+        return;
       }
-      if (stat[0].start !== earliestStart) {
-        continue;
+      if (prevSum === null) {
+        prevSum = statVal.sum;
+        return;
       }
-      const statVal = stat.shift()!;
-      if (!statVal.sum) {
-        continue;
+      const growth = statVal.sum - prevSum;
+      if (statVal.start in result) {
+        result[statVal.start] += growth;
+      } else {
+        result[statVal.start] = growth;
       }
-      sum += statVal.sum;
-    }
-
-    result.push({
-      start: earliestStart,
-      sum,
+      prevSum = statVal.sum;
     });
-  }
+  });
 
   return result;
 };
@@ -418,55 +387,110 @@ export const calculateStatisticsSumGrowthWithPercentage = (
 ): number | null => {
   let sum: number | null = null;
 
-  if (sumStats.length === 0) {
+  if (sumStats.length === 0 || percentageStat.length === 0) {
     return null;
   }
 
-  const sumStatsToProcess = mergeSumStatistics(sumStats);
-  const percentageStatToProcess = [...percentageStat];
+  const sumGrowthToProcess = mergeSumGrowthStatistics(sumStats);
 
-  let lastSum: number | null = null;
-
-  // pre-populate lastSum with last sum statistic _before_ the first percentage statistic
-  for (const stat of sumStatsToProcess) {
-    if (new Date(stat.start) >= new Date(percentageStat[0].start)) {
-      break;
+  percentageStat.forEach((percentageStatValue) => {
+    const sumGrowth = sumGrowthToProcess[percentageStatValue.start];
+    if (sumGrowth === undefined) {
+      return;
     }
-    lastSum = stat.sum;
-  }
-
-  while (percentageStatToProcess.length > 0) {
-    if (!sumStatsToProcess.length) {
-      return sum;
+    if (sum === null) {
+      sum = sumGrowth * (percentageStatValue.mean! / 100);
+    } else {
+      sum += sumGrowth * (percentageStatValue.mean! / 100);
     }
-
-    // If they are not equal, pop the value that is earlier in time
-    if (sumStatsToProcess[0].start !== percentageStatToProcess[0].start) {
-      if (
-        new Date(sumStatsToProcess[0].start) <
-        new Date(percentageStatToProcess[0].start)
-      ) {
-        sumStatsToProcess.shift();
-      } else {
-        percentageStatToProcess.shift();
-      }
-      continue;
-    }
-
-    const sumStatValue = sumStatsToProcess.shift()!;
-    const percentageStatValue = percentageStatToProcess.shift()!;
-
-    if (lastSum !== null) {
-      const sumGrowth = sumStatValue.sum! - lastSum;
-      if (sum === null) {
-        sum = sumGrowth * (percentageStatValue.mean! / 100);
-      } else {
-        sum += sumGrowth * (percentageStatValue.mean! / 100);
-      }
-    }
-
-    lastSum = sumStatValue.sum;
-  }
+  });
 
   return sum;
+};
+
+export const reduceSumStatisticsByDay = (
+  values: StatisticValue[]
+): StatisticValue[] => {
+  if (!values?.length) {
+    return [];
+  }
+  const result: StatisticValue[] = [];
+  if (
+    values.length > 1 &&
+    new Date(values[0].start).getDate() === new Date(values[1].start).getDate()
+  ) {
+    // add init value if the first value isn't end of previous period
+    result.push({
+      ...values[0]!,
+      start: startOfMonth(addDays(new Date(values[0].start), -1)).toISOString(),
+    });
+  }
+  let lastValue: StatisticValue;
+  let prevDate: number | undefined;
+  for (const value of values) {
+    const date = new Date(value.start).getDate();
+    if (prevDate === undefined) {
+      prevDate = date;
+    }
+    if (prevDate !== date) {
+      // Last value of the day
+      result.push({
+        ...lastValue!,
+        start: startOfDay(new Date(lastValue!.start)).toISOString(),
+      });
+      prevDate = date;
+    }
+    lastValue = value;
+  }
+  // Add final value
+  result.push({
+    ...lastValue!,
+    start: startOfDay(new Date(lastValue!.start)).toISOString(),
+  });
+  return result;
+};
+
+export const reduceSumStatisticsByMonth = (
+  values: StatisticValue[]
+): StatisticValue[] => {
+  if (!values?.length) {
+    return [];
+  }
+  const result: StatisticValue[] = [];
+  if (
+    values.length > 1 &&
+    new Date(values[0].start).getMonth() ===
+      new Date(values[1].start).getMonth()
+  ) {
+    // add init value if the first value isn't end of previous period
+    result.push({
+      ...values[0]!,
+      start: startOfMonth(
+        addMonths(new Date(values[0].start), -1)
+      ).toISOString(),
+    });
+  }
+  let lastValue: StatisticValue;
+  let prevMonth: number | undefined;
+  for (const value of values) {
+    const month = new Date(value.start).getMonth();
+    if (prevMonth === undefined) {
+      prevMonth = month;
+    }
+    if (prevMonth !== month) {
+      // Last value of the day
+      result.push({
+        ...lastValue!,
+        start: startOfMonth(new Date(lastValue!.start)).toISOString(),
+      });
+      prevMonth = month;
+    }
+    lastValue = value;
+  }
+  // Add final value
+  result.push({
+    ...lastValue!,
+    start: startOfMonth(new Date(lastValue!.start)).toISOString(),
+  });
+  return result;
 };
